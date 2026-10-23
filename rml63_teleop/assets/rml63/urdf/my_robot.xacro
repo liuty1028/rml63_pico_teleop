@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<robot name="my_robot"
+       xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- Local RML63-III model with the six-axis force-sensor flange. -->
+    <xacro:include filename="rml_63_gazebo.urdf.xacro"/>
+
+    <!-- Local EG2-4C2 gripper model. -->
+    <xacro:include filename="../gripper/EG2-4C2.xacro"/>
+
+    <!-- 实例化夹爪 -->
+    <xacro:Gripper name="gripper"/>
+
+    <!-- 将夹爪连接到机械臂末端 -->
+    <joint name="gripper_mount" type="fixed">
+        <parent link="link6"/>
+        <child link="gripper_gripper_base"/>
+        <origin xyz="0 0 0" rpy="0 0 1.5708"/>
+    </joint>
+
+</robot>

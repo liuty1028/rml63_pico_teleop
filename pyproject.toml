@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rml63-pico-teleop"
+version = "0.1.0"
+description = "PICO 4 Ultra teleoperation for a RealMan RML63III-6FB arm"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.0", "placo>=0.10", "PyYAML>=6.0", "robotic-arm>=1.1.6"]
+
+# 选装当前公开发布的 XR SDK；使用源码版 1.0.2 时安装基础项目即可。
+[project.optional-dependencies]
+xr = ["xrobotoolkit-sdk==1.1.0"]
+
+[tool.setuptools.packages.find]
+include = ["rml63_teleop*"]
+
+[tool.setuptools.package-data]
+rml63_teleop = ["assets/rml63/**/*", "defaults/*.yaml"]
+
+[project.scripts]
+rml63-check-robot = "rml63_teleop.cli:check_robot_main"
+rml63-check-status = "rml63_teleop.cli:check_robot_status_main"
+rml63-check-xr = "rml63_teleop.cli:check_xr_main"
+rml63-dry-run = "rml63_teleop.cli:dry_run_main"
+rml63-teleop = "rml63_teleop.cli:teleop_main"

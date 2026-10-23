@@ -1,0 +1,18 @@
+# Python 基础环境；XR SDK 的两种安装方式见 docs/ENVIRONMENT.md。
+# 不包含本机绝对路径，也不会修改已有 xr_teleop 环境。
+name: xr_teleop
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip>=24
+  - setuptools>=68
+  - wheel
+  - libstdcxx-ng
+  - cmake>=3.14
+  - pybind11
+  - pip:
+      - numpy==2.2.6
+      - placo==0.10.1
+      - PyYAML==6.0.3
+      - robotic-arm==1.1.6

@@ -1,0 +1,8 @@
+# 已在 Ubuntu 22.04 / Python 3.10 环境使用的直接依赖。
+# 这是直接依赖版本清单，不是包含所有间接依赖的完整锁文件。
+# xrobotoolkit_sdk 单独安装：本机源码版 1.0.2 不在当前 PyPI 发布列表中。
+# 不要执行 pip install xrobotoolkit-sdk==1.0.2；安装步骤见 docs/ENVIRONMENT.md。
+numpy==2.2.6
+placo==0.10.1
+PyYAML==6.0.3
+robotic-arm==1.1.6

@@ -1,0 +1,53 @@
+robot:
+  model: RML63III-6FB  # 期望型号；连接时会核对控制器返回型号与本地模型一致。
+  ip: null             # 填写机械臂控制器 IP；不要照抄 Quest 示例中的 IP。
+  port: 8080           # RealMan SDK 控制端口，通常为 8080。
+  dof: 6                # 机械臂自由度；RML63III 为六轴。
+
+teleop:
+  # 现版本固定读取右手柄；下列三个名称需保持原值，不支持在配置中切换输入源。
+  controller: right_controller
+  clutch: right_grip
+  gripper_trigger: right_trigger
+  grip_threshold: 0.9       # Grip 达到该值时接合离合；范围 0~1。
+  scale_factor: 0.5         # 手柄平移量的缩放比例；0.5 表示手柄移动 10 cm，末端目标移动 5 cm。旋转增量不缩放。
+  control_rate_hz: 50       # 遥操作循环频率，单位 Hz；实际频率会受电脑和 SDK 通信影响。
+
+mount:
+  # 将 XR 跟踪坐标中的方向旋转到机械臂基座坐标；这是 3x3 旋转矩阵，不包含平移。
+  # 当前矩阵来自 Quest 示例，只能作为未标定的初始值；需按 PICO 与机械臂的实际安装方向核对。
+  xr_to_base_rotation:
+    - [0, 0, 1]
+    - [1, 0, 0]
+    - [0, 1, 0]
+  calibration_confirmed: false       # 人工确认坐标方向正确后才能改为 true；程序不会自动标定。
+  emergency_stop_confirmed: false    # 人工确认实体急停可触及、可用后才能改为 true；程序不会检测急停状态。
+
+canfd:
+  follow: false          # 必须为 false（低跟随）；当前版本禁止高跟随模式。
+  trajectory_mode: 0     # 高跟随下 0=完全透传、1=曲线拟合、2=滤波；当前版本仅允许配置为 0。
+  radio: 0               # 曲线拟合/滤波的平滑系数；当前版本仅允许配置为 0。
+
+gripper:
+  enabled: true            # 是否发送夹爪动作；设为 false 可先单独检查机械臂运动。
+  open_position: 1000       # 扳机为 0 时的夹爪位置，当前按 1000=打开设置；范围 1~1000。
+  close_position: 1         # 扳机为 1 时的夹爪位置，当前按 1=关闭设置；需确认与现场夹爪方向一致。
+  deadband: 0.02            # 扳机变化达到该值才发送夹爪命令，范围 0~1。
+  command_rate_hz: 10       # 夹爪命令最高发送频率，单位 Hz。
+
+safety:
+  xr_startup_timeout_s: 15.0          # 启动时等待有效右手柄姿态与递增时间戳的最长时间，单位秒；等待期间不下发动作。
+  xr_timeout_ms: 200                 # 连续多长时间没有新的 XR 数据就报超时并停止控制，单位毫秒。
+  max_joint_step_deg: 1.0            # 相邻关节目标的最大角度变化，单位度；每步还受速度上限约束。
+  max_joint_velocity_deg_s: 20.0     # 软件限制的关节目标变化速度，单位度/秒。
+  max_joint_tracking_error_deg: 5.0  # 真机指令与实测关节角最大允许差，单位度；超过后报故障并尝试慢停。
+  ik_failure_limit: 3                # 连续 IK 失败次数达到此值后锁存 HOLD；真机模式会尝试慢停。
+  workspace:
+    # 末端目标在机械臂基座坐标系下的绝对 XYZ 边界，单位米；只检查目标点，不检查路径碰撞。
+    # 范围应包含当前末端位置，并按现场可用空间保守设置；不能把工作空间框当作碰撞防护。
+    x: {min: null, max: null}
+    y: {min: null, max: null}
+    z: {min: null, max: null}
+
+debug:
+  log_rate_hz: 5  # 运行日志写入频率，单位 Hz；遥操作控制循环仍按 control_rate_hz 运行。
