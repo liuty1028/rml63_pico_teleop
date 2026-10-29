@@ -28,7 +28,8 @@ def check_robot_main() -> None:
     issues = validate_config(config)
     if not config["robot"].get("ip"):
         raise SystemExit("Set robot.ip in the config before checking the robot connection.")
-    robot = RealManArm(config["robot"]["ip"], config["robot"]["port"], config["robot"]["dof"])
+    robot_cfg = config["robot"]
+    robot = RealManArm(robot_cfg["ip"], robot_cfg["port"], robot_cfg["dof"], robot_cfg.get("controller_model", "RML63III-6FB"))
     try:
         info = robot.connect()
         state = robot.get_state()
@@ -65,7 +66,8 @@ def check_xr_main() -> None:
                 f"pose_xyzw={np.round(frame.right_pose, 4).tolist()} "
                 f"base_xyz={np.round(xyz_base, 4).tolist()} "
                 f"base_quat_wxyz={np.round(quat_base, 4).tolist()} "
-                f"grip={frame.right_grip:.3f} trigger={frame.right_trigger:.3f}"
+                f"grip={frame.right_grip:.3f} trigger={frame.right_trigger:.3f} "
+                f"A={frame.right_a} B={frame.right_b}"
             )
             time.sleep(0.1)
     except KeyboardInterrupt:
@@ -79,7 +81,7 @@ def check_robot_status_main() -> None:
     args = parser.parse_args()
     config = load_config(args.config)
     robot_cfg = config["robot"]
-    robot = RealManArm(robot_cfg.get("ip"), robot_cfg.get("port", 8080), robot_cfg.get("dof", 6), robot_cfg.get("model", "RML63III-6FB"))
+    robot = RealManArm(robot_cfg.get("ip"), robot_cfg.get("port", 8080), robot_cfg.get("dof", 6), robot_cfg.get("controller_model", "RML63III-6FB"))
     try:
         info = robot.connect()
         print(f"控制器型号：{info['product_version']}")
@@ -113,3 +115,34 @@ def teleop_main() -> None:
         if issues:
             raise SystemExit("Motion is locked until configuration is complete:\n- " + "\n- ".join(issues))
     TeleopRuntime(config, dry_run=not args.enable_motion).run(enable_motion=args.enable_motion)
+
+
+def pose_dry_run_main() -> None:
+    """Preview Cartesian targets without sending arm or gripper commands."""
+    from .pose_runtime import PoseTeleopRuntime
+
+    parser = _parser("Run live XR + robot state using Cartesian pose pass-through without sending motion commands.")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    config = load_config(args.config)
+    if not config["robot"].get("ip"):
+        raise SystemExit("Set robot.ip before live dry-run; no robot motion commands will be sent.")
+    PoseTeleopRuntime(config, dry_run=True).run(enable_motion=False)
+
+
+def pose_teleop_main() -> None:
+    """Run the separate pose pass-through teleoperation mode."""
+    from .pose_runtime import PoseTeleopRuntime
+
+    parser = _parser("PICO 到 RML63 笛卡尔位姿透传遥操作；默认干运行。")
+    parser.add_argument("--enable-motion", action="store_true", help="通过配置检查和人工确认后允许真机运动")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    config = load_config(args.config)
+    if not args.enable_motion:
+        print("当前模式：位姿透传 DRY RUN，不会发送机械臂或夹爪动作。真机还需要 --enable-motion 和终端输入 ENABLE。")
+    else:
+        issues = validate_config(config, require_motion_ready=True)
+        if issues:
+            raise SystemExit("Motion is locked until configuration is complete:\n- " + "\n- ".join(issues))
+    PoseTeleopRuntime(config, dry_run=not args.enable_motion).run(enable_motion=args.enable_motion)

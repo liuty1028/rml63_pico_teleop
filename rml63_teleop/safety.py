@@ -33,7 +33,7 @@ class SafetyFilter:
         current = np.asarray(current, dtype=float).reshape(-1)
         if command.shape != self.lower.shape or current.shape != self.lower.shape or not np.all(np.isfinite(command)) or not np.all(np.isfinite(current)):
             return SafetyResult(False, None, "invalid joint tracking state")
-        limit = np.deg2rad(float(self.config.get("max_joint_tracking_error_deg", 5.0)))
+        limit = np.deg2rad(float(self.config.get("max_joint_tracking_error_deg", 12.0)))
         if np.any(np.abs(command - current) > limit):
             axis = int(np.argmax(np.abs(command - current)))
             return SafetyResult(False, None, (
@@ -44,6 +44,27 @@ class SafetyFilter:
                 f"上限={np.rad2deg(limit):.3f}°"
             ))
         return SafetyResult(True, command.copy())
+
+    def apply_tracking_slowdown(
+        self, candidate: np.ndarray, previous_command: np.ndarray, current: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Reduce new target increments as the proposed target gets ahead of feedback."""
+        candidate = np.asarray(candidate, dtype=float).reshape(-1)
+        previous_command = np.asarray(previous_command, dtype=float).reshape(-1)
+        current = np.asarray(current, dtype=float).reshape(-1)
+        if any(q.shape != self.lower.shape for q in (candidate, previous_command, current)):
+            raise ValueError("joint tracking vectors must match the robot DOF")
+        if not all(np.all(np.isfinite(q)) for q in (candidate, previous_command, current)):
+            raise ValueError("joint tracking vectors must be finite")
+        start_deg = float(self.config.get("tracking_error_slowdown_start_deg", 5.0))
+        stop_deg = float(self.config.get("max_joint_tracking_error_deg", 12.0))
+        error_deg = np.rad2deg(np.abs(candidate - current))
+        if stop_deg <= start_deg:
+            scale = np.where(error_deg < stop_deg, 1.0, 0.0)
+        else:
+            scale = np.clip((stop_deg - error_deg) / (stop_deg - start_deg), 0.0, 1.0)
+        adjusted = previous_command + (candidate - previous_command) * scale
+        return adjusted, error_deg, scale
 
     def check_pose(self, pose: Pose, require_workspace: bool = True) -> SafetyResult:
         p = np.asarray(pose.position, dtype=float).reshape(3)

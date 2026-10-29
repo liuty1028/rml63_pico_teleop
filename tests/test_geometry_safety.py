@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from rml63_teleop.geometry import ClutchMapper, Pose, QUEST_REFERENCE_ROTATION, matrix_to_quaternion, quaternion_to_matrix
+from rml63_teleop.geometry import ClutchMapper, Pose, QUEST_REFERENCE_ROTATION, matrix_to_quaternion, quaternion_to_matrix, transform_quaternion
 from rml63_teleop.config import load_config, validate_config
 from rml63_teleop.safety import SafetyFilter
 from rml63_teleop.watchdog import TimestampWatchdog
@@ -26,6 +26,49 @@ class GeometryTests(unittest.TestCase):
         mapper.update(xr, True, ee)
         target = mapper.update(xr, True, ee)
         np.testing.assert_allclose(target.quaternion, ee.quaternion, atol=1e-8)
+
+    def test_translation_with_fixed_controller_orientation_preserves_ee_orientation(self):
+        mapper = ClutchMapper(np.eye(3), 0.5)
+        ee_q = matrix_to_quaternion(quaternion_to_matrix(np.array([0.9659258263, 0.0, 0.2588190451, 0.0])))
+        ee = Pose(np.array([0.4, 0.0, 0.3]), ee_q)
+        xr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+        mapper.update(xr, True, ee)
+        moved = xr.copy()
+        moved[:3] = [0.2, -0.1, 0.3]
+        target = mapper.update(moved, True, ee)
+        np.testing.assert_allclose(target.position, ee.position + 0.5 * moved[:3], atol=1e-8)
+        np.testing.assert_allclose(quaternion_to_matrix(target.quaternion), quaternion_to_matrix(ee.quaternion), atol=1e-8)
+
+    def test_reflection_axis_map_converts_orientation(self):
+        axis_map = np.array([[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        xr_q_xyzw = np.array([np.sin(np.pi / 4), 0.0, 0.0, np.cos(np.pi / 4)])
+        mapped_wxyz = transform_quaternion(xr_q_xyzw, axis_map)
+        expected = np.array([np.cos(np.pi / 4), 0.0, np.sin(np.pi / 4), 0.0])
+        np.testing.assert_allclose(quaternion_to_matrix(mapped_wxyz), quaternion_to_matrix(expected), atol=1e-8)
+
+    def test_config_accepts_orthogonal_left_to_right_handed_axis_map(self):
+        config = load_config(PACKAGE_ROOT / "rml63_teleop" / "defaults" / "teleop.yaml")
+        config["robot"]["ip"] = "mock-robot"
+        config["mount"]["xr_to_base_rotation"] = [[0, 0, 1], [-1, 0, 0], [0, 1, 0]]
+        config["mount"]["calibration_confirmed"] = True
+        config["mount"]["emergency_stop_confirmed"] = True
+        config["safety"]["workspace"] = {axis: {"min": -1, "max": 1} for axis in "xyz"}
+        self.assertEqual(validate_config(config, require_motion_ready=True), [])
+
+    def test_rotation_deadband_and_smoothing(self):
+        mapper = ClutchMapper(np.eye(3), 0.5, rotation_deadband_deg=1.0, rotation_smoothing_alpha=0.25)
+        ee = Pose(np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]))
+        xr = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+        mapper.update(xr, True, ee)
+        small = xr.copy()
+        small[5], small[6] = np.sin(np.deg2rad(0.5) / 2), np.cos(np.deg2rad(0.5) / 2)
+        target = mapper.update(small, True, ee)
+        np.testing.assert_allclose(target.quaternion, ee.quaternion, atol=1e-8)
+        larger = xr.copy()
+        larger[5], larger[6] = np.sin(np.deg2rad(10.0) / 2), np.cos(np.deg2rad(10.0) / 2)
+        target = mapper.update(larger, True, ee)
+        angle = 2 * np.arccos(np.clip(abs(target.quaternion[0]), -1.0, 1.0))
+        self.assertAlmostEqual(np.rad2deg(angle), 2.5, places=5)
 
     def test_clutch_press_and_reengage_have_no_jump(self):
         mapper = ClutchMapper(QUEST_REFERENCE_ROTATION, 0.5)

@@ -20,13 +20,13 @@ class RobotState:
 class RealManArm:
     """Thin adapter for the installed RealMan Python API; no IK/XR logic."""
 
-    def __init__(self, ip: str, port: int = 8080, dof: int = 6, expected_model: str = "RML63III-6FB"):
+    def __init__(self, ip: str, port: int = 8080, dof: int = 6, expected_controller_model: str = "RML63III-6FB"):
         if not ip:
             raise ValueError("Robot IP is required")
         self.ip = ip
         self.port = int(port)
         self.dof = int(dof)
-        self.expected_model = expected_model
+        self.expected_controller_model = expected_controller_model
         self.arm = RoboticArm(rm_thread_mode_e.RM_TRIPLE_MODE_E)
         self.connected = False
 
@@ -40,8 +40,10 @@ class RealManArm:
         code, info = self.arm.rm_get_arm_software_info()
         if code != 0:
             raise RuntimeError(f"rm_get_arm_software_info failed with code {code}")
-        if info.get("product_version") != self.expected_model:
-            raise RuntimeError(f"控制器型号为 {info.get('product_version')!r}，项目要求 {self.expected_model!r}")
+        if info.get("product_version") != self.expected_controller_model:
+            raise RuntimeError(
+                f"控制器型号为 {info.get('product_version')!r}，配置要求 {self.expected_controller_model!r}"
+            )
         return info
 
     def get_joint_limits_rad(self) -> tuple[np.ndarray, np.ndarray]:
@@ -113,6 +115,25 @@ class RealManArm:
         result = int(self.arm.rm_movej_canfd(np.rad2deg(q).tolist(), follow=follow, expand=0, trajectory_mode=0, radio=0))
         if result != 0:
             raise RuntimeError(f"rm_movej_canfd failed with code {result}")
+        return result
+
+    def servo_pose(self, position_m: np.ndarray, quaternion_wxyz: np.ndarray, follow: bool = False) -> int:
+        """Pass a Cartesian target to RealMan CANFD; the controller computes IK."""
+        if follow is not False:
+            raise ValueError("当前项目禁止 CANFD 高跟随模式")
+        position = np.asarray(position_m, dtype=float).reshape(3)
+        quaternion = np.asarray(quaternion_wxyz, dtype=float).reshape(4)
+        if not np.all(np.isfinite(position)) or not np.all(np.isfinite(quaternion)):
+            raise ValueError("CANFD pose must contain finite position and quaternion values")
+        norm = float(np.linalg.norm(quaternion))
+        if norm < 1e-9:
+            raise ValueError("CANFD pose quaternion must be non-zero")
+        quaternion = quaternion / norm
+        # SDK rm_movep_canfd uses [x, y, z, qw, qx, qy, qz] for length 7.
+        pose = np.concatenate([position, quaternion]).tolist()
+        result = int(self.arm.rm_movep_canfd(pose, follow=follow, trajectory_mode=0, radio=0))
+        if result != 0:
+            raise RuntimeError(f"rm_movep_canfd failed with code {result}")
         return result
 
     def set_gripper_position(self, position: int) -> int:

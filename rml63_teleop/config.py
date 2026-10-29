@@ -48,8 +48,15 @@ def validate_config(config: dict[str, Any], require_motion_ready: bool = False) 
     robot = sections["robot"]
     if not isinstance(robot.get("ip"), str) or not robot["ip"].strip():
         issues.append("robot.ip is not configured")
-    if robot.get("model", "RML63III-6FB") != "RML63III-6FB":
-        issues.append("robot.model must match the bundled RML63III-6FB model")
+    if robot.get("model", "RML63II-6F-V") != "RML63II-6F-V":
+        issues.append("robot.model must match the bundled RML63II-6F-V kinematics model")
+    controller_model = robot.get("controller_model", "RML63III-6FB")
+    supported_controller_models = {
+        "RML63II-6F-V",
+        "RML63III-6FB",
+    }
+    if not isinstance(controller_model, str) or controller_model not in supported_controller_models:
+        issues.append("robot.controller_model must match the controller product_version")
     if robot.get("dof", 6) != 6:
         issues.append("robot.dof must be 6")
     number("robot", "port", 8080, integer=True, maximum=65535)
@@ -63,16 +70,28 @@ def validate_config(config: dict[str, Any], require_motion_ready: bool = False) 
     else:
         try:
             matrix = np.asarray(rotation, dtype=float)
-            if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)) or not np.allclose(matrix.T @ matrix, np.eye(3), atol=1e-3) or not np.isclose(np.linalg.det(matrix), 1.0, atol=1e-3):
-                issues.append("mount.xr_to_base_rotation must be a finite proper rotation matrix")
+            determinant = float(np.linalg.det(matrix)) if matrix.shape == (3, 3) else float("nan")
+            if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)) or not np.allclose(matrix.T @ matrix, np.eye(3), atol=1e-3) or not np.isclose(abs(determinant), 1.0, atol=1e-3):
+                issues.append("mount.xr_to_base_rotation must be a finite orthogonal axis map with determinant +1 or -1")
         except (TypeError, ValueError):
             issues.append("mount.xr_to_base_rotation must be a 3x3 matrix")
 
     safety = sections["safety"]
     for key, default in (("xr_startup_timeout_s", 15.0), ("xr_timeout_ms", None),
                          ("max_joint_step_deg", None), ("max_joint_velocity_deg_s", None),
-                         ("max_joint_tracking_error_deg", 5.0)):
+                         ("max_joint_tracking_error_deg", 12.0),
+                         ("tracking_error_slowdown_start_deg", 5.0),
+                         ("tracking_error_stop_duration_ms", 250.0)):
         number("safety", key, default)
+    if type(safety.get("tracking_error_protection_enabled", True)) is not bool:
+        issues.append("safety.tracking_error_protection_enabled must be a boolean")
+    try:
+        slowdown_start = float(safety.get("tracking_error_slowdown_start_deg", 5.0))
+        stop_error = float(safety.get("max_joint_tracking_error_deg", 12.0))
+        if np.isfinite(slowdown_start) and np.isfinite(stop_error) and slowdown_start >= stop_error:
+            issues.append("safety.tracking_error_slowdown_start_deg must be below max_joint_tracking_error_deg")
+    except (TypeError, ValueError, OverflowError):
+        pass
     number("safety", "ik_failure_limit", integer=True)
     if sections["canfd"].get("follow", False) is not False:
         issues.append("CANFD high-follow is disabled in this first version; set canfd.follow: false")
@@ -86,6 +105,8 @@ def validate_config(config: dict[str, Any], require_motion_ready: bool = False) 
     number("teleop", "control_rate_hz")
     number("teleop", "grip_threshold", maximum=1)
     number("teleop", "scale_factor")
+    number("teleop", "rotation_deadband_deg", 1.0, positive=False)
+    number("teleop", "rotation_smoothing_alpha", 0.25, maximum=1.0)
     gripper = sections["gripper"]
     if type(gripper.get("enabled", True)) is not bool:
         issues.append("gripper.enabled must be a boolean")

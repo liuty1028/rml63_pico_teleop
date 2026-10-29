@@ -186,7 +186,7 @@ class ConfigAndEntryTests(unittest.TestCase):
         with patch("rml63_teleop.realman_arm.RoboticArm") as sdk_class, \
              patch("rml63_teleop.runtime.XrClient") as xr_class, \
              patch("rml63_teleop.runtime.Path.open", mock_open()) as telemetry_open, \
-             patch("builtins.input", return_value="ENABLE RML63 MOTION"), patch("builtins.print"):
+             patch("builtins.input", return_value="ENABLE"), patch("builtins.print"):
             sdk = sdk_class.return_value
             sdk.arm_dof = 6
             sdk.rm_create_robot_arm.return_value = Mock(id=1)

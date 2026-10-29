@@ -14,6 +14,8 @@ class XRInput:
     right_pose: np.ndarray
     right_grip: float
     right_trigger: float
+    right_a: bool = False
+    right_b: bool = False
 
 
 class XRTrackingError(ValueError):
@@ -29,6 +31,8 @@ class XrClient:
         pose = np.asarray(xrt.get_right_controller_pose(), dtype=float).reshape(7)
         grip = float(xrt.get_right_grip())
         trigger = float(xrt.get_right_trigger())
+        right_a = bool(xrt.get_A_button())
+        right_b = bool(xrt.get_B_button())
         timestamp = int(xrt.get_time_stamp_ns())
         if not np.all(np.isfinite(pose)) or not np.isfinite(grip) or not np.isfinite(trigger):
             raise XRTrackingError("XR SDK returned non-finite controller data; check headset/controller tracking")
@@ -43,7 +47,7 @@ class XrClient:
             raise XRTrackingError("XR grip/trigger values are outside [0, 1]; controller tracking may be unavailable")
         if timestamp <= 0:
             raise XRTrackingError("XR 时间戳尚未有效")
-        return XRInput(timestamp, pose, grip, trigger)
+        return XRInput(timestamp, pose, grip, trigger, right_a, right_b)
 
     def wait_until_ready(
         self,

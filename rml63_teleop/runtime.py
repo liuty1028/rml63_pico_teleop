@@ -25,14 +25,19 @@ class TeleopRuntime:
         self.config = config
         self.dry_run = dry_run
         robot_cfg = config["robot"]
-        self.robot = RealManArm(robot_cfg.get("ip"), robot_cfg.get("port", 8080), robot_cfg.get("dof", 6), robot_cfg.get("model", "RML63III-6FB"))
+        self.robot = RealManArm(robot_cfg.get("ip"), robot_cfg.get("port", 8080), robot_cfg.get("dof", 6), robot_cfg.get("controller_model", "RML63III-6FB"))
         urdf_path = Path(__file__).resolve().parent / "assets" / "rml63" / "robot_ik.urdf"
         self.ik = PlacoIK(urdf_path, robot_cfg.get("dof", 6))
         self.ik.solver.dt = 1.0 / float(config["teleop"]["control_rate_hz"])
         self.safety = SafetyFilter(config["safety"], self.ik.lower, self.ik.upper)
         mount_cfg = config.get("mount", {})
         rotation = mount_cfg.get("xr_to_base_rotation") or QUEST_REFERENCE_ROTATION.tolist()
-        self.mapper = ClutchMapper(np.asarray(rotation, dtype=float), config["teleop"]["scale_factor"])
+        self.mapper = ClutchMapper(
+            np.asarray(rotation, dtype=float),
+            config["teleop"]["scale_factor"],
+            config["teleop"].get("rotation_deadband_deg", 1.0),
+            config["teleop"].get("rotation_smoothing_alpha", 0.25),
+        )
         self.xr: XrClient | None = None
         self.state = TeleopState.READY
 
@@ -66,8 +71,8 @@ class TeleopRuntime:
                     f"rate: {self.config['teleop']['control_rate_hz']} Hz; CANFD follow: false"
                 )
                 print("Keep the physical E-stop within reach. Grip release holds current position.")
-                answer = input("Type ENABLE RML63 MOTION to continue: ").strip()
-                if answer != "ENABLE RML63 MOTION":
+                answer = input("Type ENABLE to continue: ").strip()
+                if answer != "ENABLE":
                     LOG.info("Operator did not enable motion")
                     return
                 motion_confirmed = True
@@ -105,6 +110,8 @@ class TeleopRuntime:
             timeout_s = float(self.config["safety"]["xr_timeout_ms"]) / 1000.0
             trigger_cfg = self.config["gripper"]
             previous_trigger = None
+            previous_a = startup_frame.right_a
+            previous_b = startup_frame.right_b
             last_gripper_command_time = 0.0
             xr_watchdog = TimestampWatchdog(timeout_s)
             xr_watchdog.observe(startup_frame.timestamp_ns, xr_ready_time)
@@ -114,6 +121,8 @@ class TeleopRuntime:
             consecutive_ik_failures = 0
             ik_failure_limit = int(self.config["safety"]["ik_failure_limit"])
             hold_latched = False
+            tracking_protection_enabled = bool(self.config["safety"].get("tracking_error_protection_enabled", True))
+            tracking_error_since: float | None = None
             arm_commands_sent = 0
             gripper_commands_sent = 0
             last_canfd_return_code = None
@@ -148,6 +157,25 @@ class TeleopRuntime:
                         self._best_effort_stop()
                     break
                 current_ee = self.ik.forward(current_q)
+                tracking_hold_triggered = False
+                tracking_error_deg = float(np.max(np.rad2deg(np.abs(last_q_command - current_q))))
+                tracking_scale = 1.0
+                if enable_motion and tracking_protection_enabled and not hold_latched:
+                    stop_error_deg = float(self.config["safety"].get("max_joint_tracking_error_deg", 12.0))
+                    stop_duration_s = float(self.config["safety"].get("tracking_error_stop_duration_ms", 250.0)) / 1000.0
+                    if tracking_error_deg > stop_error_deg:
+                        if tracking_error_since is None:
+                            tracking_error_since = tick_start
+                        elif tick_start - tracking_error_since >= stop_duration_s:
+                            hold_latched = True
+                            tracking_hold_triggered = True
+                            self._protective_hold(
+                                f"关节跟踪误差持续超限（最大 {tracking_error_deg:.2f}°，阈值 {stop_error_deg:.2f}°）",
+                                enable_motion,
+                            )
+                            tracking_error_since = None
+                    else:
+                        tracking_error_since = None
                 grip_active = xr_frame.right_grip >= grip_threshold
                 transformed_xyz, transformed_quat = transform_controller_pose(
                     xr_frame.right_pose, self.mapper.rotation
@@ -159,7 +187,7 @@ class TeleopRuntime:
 
                 if hold_latched:
                     previous_trigger = xr_frame.right_trigger
-                    if not grip_active:
+                    if not grip_active and not tracking_hold_triggered:
                         hold_latched = False
                         self.state = TeleopState.HOLD
                         consecutive_ik_failures = 0
@@ -201,10 +229,6 @@ class TeleopRuntime:
                         last_q_command = current_q.copy()
                         ik_status = "clutch_reference"
                     else:
-                        if enable_motion:
-                            tracking = self.safety.check_tracking(last_q_command, current_q)
-                            if not tracking.accepted:
-                                raise RuntimeError(tracking.reason)
                         try:
                             candidate = self.ik.solve(target_ee, last_q_command)
                         except Exception as exc:
@@ -221,6 +245,14 @@ class TeleopRuntime:
                             safety_status = "accepted" if joint_result.accepted else joint_result.reason
                             if joint_result.accepted and joint_result.joint_rad is not None:
                                 candidate_command = joint_result.joint_rad
+                                if enable_motion and tracking_protection_enabled:
+                                    candidate_command, projected_error_deg, joint_scales = self.safety.apply_tracking_slowdown(
+                                        candidate_command, last_q_command, current_q
+                                    )
+                                    tracking_scale = float(np.min(joint_scales))
+                                    if tracking_scale < 0.999:
+                                        tracking_error_deg = max(tracking_error_deg, float(np.max(projected_error_deg)))
+                                        safety_status = f"tracking slowdown scale={tracking_scale:.3f}"
                                 # 关节限速会改变实际发送的末端位置，需对限速后的目标再做边界检查。
                                 command_pose_check = self.safety.check_pose(self.ik.forward(candidate_command), require_workspace=enable_motion)
                                 if not command_pose_check.accepted:
@@ -228,9 +260,6 @@ class TeleopRuntime:
                                     safety_status = command_pose_check.reason
                                     self._protective_hold(command_pose_check.reason, enable_motion)
                                 if enable_motion:
-                                    tracking = self.safety.check_tracking(candidate_command, current_q)
-                                    if not tracking.accepted:
-                                        raise RuntimeError(tracking.reason)
                                     if not hold_latched:
                                         try:
                                             self._require_fresh_command(xr_watchdog, tick_start, timeout_s)
@@ -251,14 +280,46 @@ class TeleopRuntime:
                 if hold_latched:
                     last_q_command = current_q.copy()
                     previous_trigger = xr_frame.right_trigger
+                    tracking_error_since = None
 
                 gripper_position = int(round(trigger_cfg["open_position"] + xr_frame.right_trigger * (trigger_cfg["close_position"] - trigger_cfg["open_position"])))
+                a_pressed = xr_frame.right_a and not previous_a
+                b_pressed = xr_frame.right_b and not previous_b
+                previous_a = xr_frame.right_a
+                previous_b = xr_frame.right_b
+                gripper_button_action = None
+                if a_pressed and not xr_frame.right_b:
+                    gripper_button_action = "open"
+                    button_position = int(trigger_cfg["open_position"])
+                elif b_pressed and not xr_frame.right_a:
+                    gripper_button_action = "close"
+                    button_position = int(trigger_cfg["close_position"])
+                else:
+                    button_position = None
+                    if a_pressed and b_pressed:
+                        gripper_button_action = "conflict_ignored"
                 if previous_trigger is None:
                     # Establish a no-motion input baseline at startup.
                     previous_trigger = xr_frame.right_trigger
                 trigger_changed = abs(xr_frame.right_trigger - previous_trigger) >= float(trigger_cfg["deadband"])
                 gripper_rate_due = tick_start - last_gripper_command_time >= 1.0 / float(trigger_cfg["command_rate_hz"])
-                if trigger_cfg.get("enabled", True) and not hold_latched and trigger_changed and gripper_rate_due:
+                if trigger_cfg.get("enabled", True) and not hold_latched and button_position is not None:
+                    # A/B are discrete press-edge commands; releasing either button sends no command.
+                    previous_trigger = xr_frame.right_trigger
+                    last_gripper_command_time = tick_start
+                    gripper_position = button_position
+                    if enable_motion:
+                        try:
+                            self._require_fresh_command(xr_watchdog, tick_start, timeout_s)
+                            gripper_return_code = self.robot.set_gripper_position(button_position)
+                            last_gripper_return_code = gripper_return_code
+                            gripper_commands_sent += 1
+                        except Exception as exc:
+                            self.state = TeleopState.FAULT
+                            LOG.exception("Gripper button command failed: %s", exc)
+                            self._best_effort_stop()
+                            break
+                elif trigger_cfg.get("enabled", True) and not hold_latched and trigger_changed and gripper_rate_due:
                     previous_trigger = xr_frame.right_trigger
                     last_gripper_command_time = tick_start
                     if enable_motion:
@@ -283,6 +344,9 @@ class TeleopRuntime:
                         "gripper_enabled": trigger_cfg.get("enabled", True),
                         "grip": xr_frame.right_grip,
                         "trigger": xr_frame.right_trigger,
+                        "right_a": xr_frame.right_a,
+                        "right_b": xr_frame.right_b,
+                        "gripper_button_action": gripper_button_action,
                         "xr_pose_raw": xr_frame.right_pose.tolist(),
                         "xr_position_base_m": transformed_xyz.tolist(),
                         "xr_quaternion_base_wxyz": transformed_quat.tolist(),
@@ -294,6 +358,8 @@ class TeleopRuntime:
                         "q_current_rad": current_q.tolist(),
                         "q_target_rad": last_q_command.tolist(),
                         "q_target_deg": np.rad2deg(last_q_command).tolist(),
+                        "tracking_error_max_deg": tracking_error_deg,
+                        "tracking_scale": tracking_scale,
                         "gripper_position": gripper_position,
                         "ik_status": ik_status,
                         "safety_status": safety_status,

@@ -1,11 +1,10 @@
-# RML63III-6FB + EG2-4C2 模型
+# RML63II-6F-V + EG2-4C2 模型
 
-此目录包含从本机 XRoboToolkit RML63 资源整理出的模型文件。`robot_full.urdf` 和 `robot_ik.urdf` 由 `urdf/my_robot.xacro` 生成，型号使用 6FB 六维力法兰；IK 模型将夹爪手指关节固定，只求解六个机械臂关节。URDF 中的网格路径相对本目录。
+`robot_full.urdf` 是真机工具坐标和仿真/可视化共用的完整模型；`robot_ik.urdf` 使用相同机械臂几何与工具偏置，并将夹爪关节固定，供 Placo 求解六个机械臂关节。机械臂来自 [RealManRobot/rm_models](https://github.com/RealManRobot/rm_models) 的 `RML63II-6F-V` 模型（源仓库提交 `0785b56b12a6259f0f4e5f258b5367c4d950d85e`）；本仓库仅保留所需 URDF、网格及上游许可证。原有 EG2-4C2 夹爪保持不变。模型也包含随新机械臂 URDF 提供的相机安装座和相机网格；安装座转轴固定在 0°。
 
-- 工具末端帧：`gripper_eef`
-- 机械臂关节：`joint1` 至 `joint6`
-- 关节范围：J1/J2/J4/J5 为 −178°～178°，J3 为 −178°～145°，J6 为 −360°～360°
+- 机械臂关节：`joint_1` 至 `joint_6`
+- IK 工具末端帧：`gripper_eef`
+- 法兰与夹爪之间：76 mm 长、半径 29 mm 的圆柱连接件
+- ROS `package://` 网格地址已改为相对 URDF 的本地路径，可在未安装 ROS 包的 Placo 和仿真环境中读取
 
-原资源中 6FB 分支的第 6 轴方向与 RealMan 离线算法相反。已将该分支和两个生成 URDF 的轴修正为 `[0, 0, 1]`，并修正关节限位；修改仅在本项目副本中。使用 RealMan SDK 的 RML63III、一体式六维力版本离线正解，对零位、记录的真机关节角以及 J6 正/负角度等多组姿态做了对照，法兰位置/朝向差在 0.2 mm / 0.05 度以内。
-
-相邻连杆的碰撞网格存在重叠，因此 Placo 加载时忽略碰撞几何。程序只执行关节范围和配置的 XYZ 工作空间检查，不做障碍物或完整自碰撞规划。模型尚未根据用户机械臂的基座安装方向、TCP 和现场工具偏置进行标定。
+仿真或可视化加载 `robot_full.urdf`。真机 IK 使用 `robot_ik.urdf`。模型坐标仍需依据实际安装方向和 TCP 标定；更换机器人型号后也应确认控制器报告的关节顺序和限位。

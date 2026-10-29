@@ -108,7 +108,7 @@ class RuntimeStartupTests(unittest.TestCase):
         patches = (
             patch("rml63_teleop.runtime.XrClient", return_value=self.xr),
             patch("rml63_teleop.runtime.Path.open", self.telemetry_open),
-            patch("builtins.input", return_value="ENABLE RML63 MOTION"),
+            patch("builtins.input", return_value="ENABLE"),
             patch("builtins.print"),
         )
         for patcher in patches:

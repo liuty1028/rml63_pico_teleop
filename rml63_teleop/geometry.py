@@ -72,8 +72,34 @@ def matrix_to_quaternion(matrix: np.ndarray) -> np.ndarray:
 def transform_quaternion(q_xr_xyzw: np.ndarray, rotation_xr_to_base: np.ndarray) -> np.ndarray:
     q_xyzw = np.asarray(q_xr_xyzw, dtype=float).reshape(4)
     q_xr = _normalize_quaternion(np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]]))
-    q_map = matrix_to_quaternion(rotation_xr_to_base)
-    return quat_multiply(quat_multiply(q_map, q_xr), quat_inverse(q_map))
+    axis_map = np.asarray(rotation_xr_to_base, dtype=float).reshape(3, 3)
+    # Transform the represented rotation by the coordinate basis map. This
+    # also works when mapping XR's left-handed frame into the robot's
+    # right-handed frame with an orthogonal reflection (determinant -1).
+    mapped_rotation = axis_map @ quaternion_to_matrix(q_xr) @ axis_map.T
+    return matrix_to_quaternion(mapped_rotation)
+
+
+def quat_slerp(a: np.ndarray, b: np.ndarray, fraction: float) -> np.ndarray:
+    """Spherical interpolation between [w, x, y, z] unit quaternions."""
+    a = _normalize_quaternion(a)
+    b = _normalize_quaternion(b)
+    t = float(fraction)
+    if not np.isfinite(t) or not 0.0 <= t <= 1.0:
+        raise ValueError("Quaternion interpolation fraction must be in [0, 1]")
+    dot = float(np.dot(a, b))
+    if dot < 0.0:
+        b = -b
+        dot = -dot
+    dot = float(np.clip(dot, -1.0, 1.0))
+    if dot > 0.9995:
+        return _normalize_quaternion(a + t * (b - a))
+    theta = float(np.arccos(dot))
+    sin_theta = float(np.sin(theta))
+    return _normalize_quaternion(
+        (np.sin((1.0 - t) * theta) / sin_theta) * a
+        + (np.sin(t * theta) / sin_theta) * b
+    )
 
 
 def transform_controller_pose(pose_xyzw: np.ndarray, rotation_xr_to_base: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -99,11 +125,24 @@ class Pose:
 class ClutchMapper:
     """Maps controller deltas to the robot EE with a no-jump clutch."""
 
-    def __init__(self, rotation_xr_to_base: np.ndarray, scale_factor: float):
+    def __init__(
+        self,
+        rotation_xr_to_base: np.ndarray,
+        scale_factor: float,
+        rotation_deadband_deg: float = 1.0,
+        rotation_smoothing_alpha: float = 0.25,
+    ):
         self.rotation = np.asarray(rotation_xr_to_base, dtype=float).reshape(3, 3)
         self.scale_factor = float(scale_factor)
+        self.rotation_deadband_rad = np.deg2rad(float(rotation_deadband_deg))
+        self.rotation_smoothing_alpha = float(rotation_smoothing_alpha)
+        if not np.isfinite(self.rotation_deadband_rad) or self.rotation_deadband_rad < 0:
+            raise ValueError("Rotation deadband must be finite and non-negative")
+        if not np.isfinite(self.rotation_smoothing_alpha) or not 0.0 < self.rotation_smoothing_alpha <= 1.0:
+            raise ValueError("Rotation smoothing alpha must be in (0, 1]")
         self.controller_ref: Pose | None = None
         self.ee_ref: Pose | None = None
+        self.filtered_delta_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
 
     @property
     def active(self) -> bool:
@@ -112,6 +151,7 @@ class ClutchMapper:
     def release(self) -> None:
         self.controller_ref = None
         self.ee_ref = None
+        self.filtered_delta_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
 
     def update(self, xr_pose_xyzw: np.ndarray, grip_active: bool, current_ee: Pose) -> Pose | None:
         current_ee = current_ee.normalized()
@@ -123,10 +163,23 @@ class ClutchMapper:
         if self.controller_ref is None:
             self.controller_ref = Pose(controller_position.copy(), controller_quaternion.copy())
             self.ee_ref = Pose(current_ee.position.copy(), current_ee.quaternion.copy())
+            self.filtered_delta_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
             return current_ee
 
         assert self.ee_ref is not None
         delta_position = (controller_position - self.controller_ref.position) * self.scale_factor
         delta_quaternion = quat_multiply(controller_quaternion, quat_inverse(self.controller_ref.quaternion))
-        target_quaternion = quat_multiply(delta_quaternion, self.ee_ref.quaternion)
+        # Use the shortest equivalent quaternion so q and -q do not look like
+        # a large rotation. Ignore sub-deadband changes, then smooth the delta.
+        if delta_quaternion[0] < 0.0:
+            delta_quaternion = -delta_quaternion
+        delta_angle = 2.0 * float(np.arccos(np.clip(delta_quaternion[0], -1.0, 1.0)))
+        if delta_angle < self.rotation_deadband_rad:
+            delta_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
+        self.filtered_delta_quaternion = quat_slerp(
+            self.filtered_delta_quaternion,
+            delta_quaternion,
+            self.rotation_smoothing_alpha,
+        )
+        target_quaternion = quat_multiply(self.filtered_delta_quaternion, self.ee_ref.quaternion)
         return Pose(self.ee_ref.position + delta_position, target_quaternion).normalized()

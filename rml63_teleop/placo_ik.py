@@ -7,7 +7,7 @@ import placo
 
 from .geometry import Pose, matrix_to_quaternion, quaternion_to_matrix
 
-JOINT_NAMES = [f"joint{i}" for i in range(1, 7)]
+JOINT_NAMES = [f"joint_{i}" for i in range(1, 7)]
 EE_LINK = "gripper_eef"
 
 
